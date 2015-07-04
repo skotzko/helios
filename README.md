@@ -1,7 +1,7 @@
 helios
 ======
 
-[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/Aaronontheweb/helios?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+[![Join the chat at https://gitter.im/helios-io/helios](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/helios-io/helios?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
 Helios is concurrency and networking middleware for .NET - think of it as a loose C# port of Java's wildly influential [Netty](http://netty.io/) library. Helios offers .NET developers the ability to develop high-performance networked applications on top of TCP and UDP sockets combined with powerful stream-management, event brokering, and concurrency capabilities.
 
@@ -20,7 +20,7 @@ Helios has a combination of features that were all chosen for their practical va
 1. And lots of other utilities, such as `NullGuard` and `AtomicReference`.
 
 ## License
-See [LICENSE](https://github.com/Aaronontheweb/helios/blob/master/LICENSE) for details. 
+See [LICENSE](https://github.com/Aaronontheweb/helios/blob/master/LICENSE) for details.
 
 ## Contributing
 Helios happily accepts pull requests - please use concise, clear commit messages and reference Issue numbers in your pull requests if appropriate.

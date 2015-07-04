@@ -1,6 +1,6 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -10,25 +10,15 @@ using Helios.Exceptions;
 using Helios.Ops;
 using Helios.Serialization;
 using Helios.Topology;
+using Helios.Tracing;
 using Helios.Util;
-using Helios.Util.Collections;
 using Helios.Util.TimedOps;
 
 namespace Helios.Net.Connections
 {
-    internal static class SendBufferProcessingStatus
-    {
-        public const int Idle = 0;
-        public const int Busy = 1;
-    }
-
     public abstract class UnstreamedConnectionBase : IConnection
     {
-        protected ConcurrentCircularBuffer<NetworkData> SendQueue = new ConcurrentCircularBuffer<NetworkData>(100, Int32.MaxValue);
-        protected int Throughput = 10;
-        protected int IsIdle = SendBufferProcessingStatus.Idle; //1 for busy, 0 for idle
-        protected volatile bool HasUnsentMessages;
-
+        
         protected UnstreamedConnectionBase(int bufferSize = NetworkConstants.DEFAULT_BUFFER_SIZE) : this(EventLoopFactory.CreateNetworkEventLoop(), null, Encoders.DefaultEncoder, Encoders.DefaultDecoder, UnpooledByteBufAllocator.Default, bufferSize) { }
 
         protected UnstreamedConnectionBase(NetworkEventLoop eventLoop, INode binding, TimeSpan timeout, IMessageEncoder encoder, IMessageDecoder decoder, IByteBufAllocator allocator, int bufferSize = NetworkConstants.DEFAULT_BUFFER_SIZE)
@@ -96,7 +86,9 @@ namespace Helios.Net.Connections
 
         public abstract bool IsOpen();
         public abstract int Available { get; }
-        public int MessagesInSendQueue { get { return SendQueue.Count; } }
+
+        [Obsolete("No longer supported")]
+        public int MessagesInSendQueue { get { return 0; } }
         public abstract Task<bool> OpenAsync();
         public abstract void Configure(IConnectionConfig config);
 
@@ -140,12 +132,13 @@ namespace Helios.Net.Connections
                 if (!receiveState.Socket.Connected || received == 0)
                 {
                     Receiving = false;
+                    HeliosTrace.Instance.TcpClientReceiveFailure();
                     Close(new HeliosConnectionException(ExceptionType.Closed));
                     return;
                 }
 
                 receiveState.Buffer.WriteBytes(receiveState.RawBuffer, 0, received);
-
+                HeliosTrace.Instance.TcpClientReceive(received);
                 List<IByteBuf> decoded;
                 Decoder.Decode(this, receiveState.Buffer, out decoded);
 
@@ -153,6 +146,7 @@ namespace Helios.Net.Connections
                 {
                     var networkData = NetworkData.Create(receiveState.RemoteHost, message);
                     InvokeReceiveIfNotNull(networkData);
+					HeliosTrace.Instance.TcpClientReceiveSuccess();
                 }
 
                 //reuse the buffer
@@ -167,20 +161,24 @@ namespace Helios.Net.Connections
                     receiveState.Socket.BeginReceive(receiveState.RawBuffer, 0, receiveState.RawBuffer.Length,
                         SocketFlags.None, ReceiveCallback, receiveState);
                 }
+                
             }
             catch (SocketException ex) //typically means that the socket is now closed
             {
+                HeliosTrace.Instance.TcpClientReceiveFailure();
                 Receiving = false;
                 Close(new HeliosConnectionException(ExceptionType.Closed, ex));
             }
             catch (ObjectDisposedException ex) //socket was already disposed
             {
+                HeliosTrace.Instance.TcpClientReceiveFailure();
                 Receiving = false;
                 InvokeDisconnectIfNotNull(RemoteHost,
                     new HeliosConnectionException(ExceptionType.Closed, ex));
             }
             catch (Exception ex)
             {
+                HeliosTrace.Instance.TcpClientReceiveFailure();
                 InvokeErrorIfNotNull(ex);
             }
         }
@@ -234,9 +232,8 @@ namespace Helios.Net.Connections
 
         public void Send(NetworkData data)
         {
-            HasUnsentMessages = true;
-            SendQueue.Enqueue(data);
-            Schedule();
+			HeliosTrace.Instance.TcpClientSendQueued ();
+            SendInternal(data.Buffer, 0, data.Length, data.RemoteHost);
         }
 
         public void Send(byte[] buffer, int index, int length, INode destination)
@@ -245,57 +242,6 @@ namespace Helios.Net.Connections
         }
 
         protected abstract void SendInternal(byte[] buffer, int index, int length, INode destination);
-
-        /// <summary>
-        /// Schedules the send buffer to begin draining
-        /// </summary>
-        protected void Schedule()
-        {
-            //only schedule if we're idle
-            if (Interlocked.Exchange(ref IsIdle, SendBufferProcessingStatus.Busy) == SendBufferProcessingStatus.Idle)
-            {
-                EventLoop.Execute(Run);
-            }
-        }
-
-        protected void Run()
-        {
-            if (WasDisposed || !IsOpen())
-                return;
-
-            //Set the deadline timer for this run
-            var deadlineTimer = Deadline.Now + Timeout;
-
-            //we are about to process all enqueued messages
-            HasUnsentMessages = false;
-
-            //we should process x messages in this run
-            var left = Throughput;
-
-            NetworkData message;
-            while (SendQueue.TryTake(out message))
-            {
-                SendInternal(message.Buffer, 0, message.Length, message.RemoteHost);
-                left--;
-                if (WasDisposed)
-                    return;
-
-                //if the deadline has expired, stop and break
-                if (deadlineTimer.IsOverdue || left == 0)
-                {
-                    break; //we're done for this run
-                }
-            }
-
-            //there are still unsent messages that need to be processed
-            if (SendQueue.Count > 0)
-                HasUnsentMessages = true;
-
-            if (HasUnsentMessages)
-                EventLoop.Execute(Run);
-            else
-                Interlocked.Exchange(ref IsIdle, SendBufferProcessingStatus.Idle);
-        }
 
         public override string ToString()
         {
